@@ -12,6 +12,7 @@ from PIL import Image
 from utils.utils import png_fill_color
 import timm
 from utils.sketch_utils import _transform, create_random_pose, get_P_from_transform_matrix
+import json as js
 
 
 def generate_unconditional(
@@ -47,6 +48,112 @@ def generate_unconditional(
             except Exception as e:
                 print(str(e))
             index += 1
+
+
+def generate_unconditional1(
+    model_path: str,
+    output_path: str = "./outputs",
+    ema: bool = True,
+    num_generate: int = 36,
+    start_index: int = 0,
+    steps: int = 50,
+    truncated_time: float = 0.0,
+):
+    model_name, model_id = model_path.split('/')[-2], model_path.split('/')[-1]
+    discrete_diffusion = DiffusionModel.load_from_checkpoint(model_path).cuda()
+    postfix = f"{model_name}_{model_id}_{ema}_{steps}_{truncated_time}_unconditional"
+    root_dir = os.path.join(output_path, postfix)
+
+    ensure_directory(root_dir)
+    batches = num_to_groups(num_generate, 1024)
+    generator = discrete_diffusion.ema_model if ema else discrete_diffusion.model
+    index = start_index
+    
+    gathered_samples=[]
+    for batch in batches:
+        res_tensor = generator.sample_unconditional1(
+            batch_size=batch, steps=steps, truncated_index=truncated_time)
+        gathered_samples.extend(post_process(res_tensor).cpu().numpy())
+    save_as_npz(gathered_samples,output_path)
+
+def generate_conditional1(
+    model_path: str,
+    output_path: str = "./outputs",
+    ema: bool = True,
+    num_generate: int = 36,
+    start_index: int = 0,
+    steps: int = 50,
+    truncated_time: float = 0.0,
+):
+    model_name, model_id = model_path.split('/')[-2], model_path.split('/')[-1]
+    discrete_diffusion = DiffusionModel.load_from_checkpoint(model_path).cuda()
+    postfix = f"{model_name}_{model_id}_{ema}_{steps}_{truncated_time}_conditional"
+    root_dir = os.path.join(output_path, postfix)
+
+    ensure_directory(root_dir)
+    batches = num_to_groups(num_generate, 1024)
+    generator = discrete_diffusion.ema_model if ema else discrete_diffusion.model
+    index = start_index
+
+    gathered_samples=[]
+    for batch in batches:
+        res_tensor = generator.sample_conditional1(
+            batch_size=batch, steps=steps, truncated_index=truncated_time)
+        gathered_samples.extend(post_process(res_tensor).cpu().numpy())
+    save_as_npz(gathered_samples,output_path)
+
+
+def generate_conditional2(
+    model_path: str,
+    output_path: str = "./outputs",
+    ema: bool = True,
+    num_generate: int = 36,
+    start_index: int = 0,
+    steps: int = 50,
+    truncated_time: float = 0.0,
+    json_path="",
+):
+    model_name, model_id = model_path.split('/')[-2], model_path.split('/')[-1]
+    discrete_diffusion = DiffusionModel.load_from_checkpoint(model_path).cuda()
+    postfix = f"{model_name}_{model_id}_{ema}_{steps}_{truncated_time}_conditional"
+    root_dir = os.path.join(output_path, postfix)
+
+    assert(json_path!="")
+
+    # load json file
+    with open(json_path,"r") as f:
+            data=js.load(f)
+    mycond=torch.tensor([val for val in data.values()])
+    b=torch.ones((10,1))
+    mycond=torch.kron(mycond,b)
+    # args.num_generate will not be used
+    num_generate=mycond.shape[0]
+
+    ensure_directory(root_dir)
+    batches = num_to_groups(num_generate, 1024)
+    generator = discrete_diffusion.ema_model if ema else discrete_diffusion.model
+    index = start_index
+
+    num_generated=0
+    gathered_samples=[]
+    for batch in batches:
+        res_tensor = generator.sample_conditional3(
+            batch_size=batch, steps=steps, truncated_index=truncated_time,mycond=mycond[num_generated:num_generated+batch])
+        num_generated+=batch
+        gathered_samples.extend(post_process(res_tensor).cpu().numpy())
+    save_as_npz(gathered_samples,output_path)
+
+
+
+def post_process(res_tensor):
+    res_tensor = ((res_tensor+1)*127.5).clamp(0,255).to(torch.uint8)
+    res_tensor = res_tensor.permute(0,2,3,1)
+    res_tensor = res_tensor.contiguous()
+    return res_tensor
+
+def save_as_npz(gathered_samples,path):
+    arr = np.array(gathered_samples)
+    np.savez(path,arr)
 
 
 def generate_based_on_data_class(
@@ -169,7 +276,8 @@ if __name__ == '__main__':
                         help="please choose :\n \
                             1. 'generate_unconditional' \n \
                             2. 'generate_based_on_class' \n \
-                            3. 'generate_based_on_sketch' \n \ ")
+                            3. 'generate_based_on_sketch' \n \
+                            4. 'generate_based_on_elastic_tensor' \n \ ")
 
     parser.add_argument("--model_path", type=str, required=True)
     parser.add_argument("--output_path", type=str, default="./outputs")
@@ -189,12 +297,14 @@ if __name__ == '__main__':
     parser.add_argument("--elevation", type=float, default=0.)
     parser.add_argument("--kernel_size", type=float, default=4.)
     parser.add_argument("--verbose", type=str2bool, default=False)
+    # json file of elastic tensors
+    parser.add_argument("--json_path", type=str, default="")
 
     args = parser.parse_args()
     method = (args.generate_method).lower()
     ensure_directory(args.output_path)
     if method == "generate_unconditional":
-        generate_unconditional(model_path=args.model_path, num_generate=args.num_generate,
+        generate_unconditional1(model_path=args.model_path, num_generate=args.num_generate,
                                output_path=args.output_path, ema=args.ema, start_index=args.start_index, steps=args.steps,
                                truncated_time=args.truncated_time)
     elif method == "generate_based_on_class":
@@ -209,5 +319,13 @@ if __name__ == '__main__':
                                  detail_view=args.detail_view,
                                  rotation=args.rotation, elevation=args.elevation
                                  )
+    elif method == "generate_based_on_elastic_tensor":
+        generate_conditional1(model_path=args.model_path, num_generate=args.num_generate,
+                               output_path=args.output_path, ema=args.ema, start_index=args.start_index, steps=args.steps,
+                               truncated_time=args.truncated_time)
+    elif method == "generate_based_on_json":
+        generate_conditional2(model_path=args.model_path, num_generate=args.num_generate,
+                               output_path=args.output_path, ema=args.ema, start_index=args.start_index, steps=args.steps,
+                               truncated_time=args.truncated_time,json_path=args.json_path)
     else:
         raise NotImplementedError

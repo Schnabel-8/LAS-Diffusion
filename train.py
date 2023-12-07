@@ -16,7 +16,7 @@ def train_from_folder(
     sketch_folder: str = "/home/D/dataset/shapenet_edge_our_new",
     data_class: str = "chair",
     results_folder: str = './results',
-    name: str = "debug",
+    name: str = "model",
     image_size: int = 64,
     base_channels: int = 32,
     optimizier: str = "adam",
@@ -56,7 +56,7 @@ def train_from_folder(
         debug = False
 
     data_classes = list(snc_category_to_synth_id_all.keys())
-    data_classes.extend(["debug", "class_5", "class_13", "all"])
+    data_classes.extend(["debug", "class_5", "class_13", "microstructure", "all"])
     assert data_class in data_classes
 
     results_folder = results_folder + "/" + name

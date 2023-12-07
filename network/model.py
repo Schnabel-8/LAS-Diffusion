@@ -8,6 +8,7 @@ from random import random
 from functools import partial
 from torch import nn
 from torch.special import expm1
+import time as tm
 
 TRUNCATED_TIME = 0.7
 
@@ -38,6 +39,8 @@ class OccupancyDiffusion(nn.Module):
             channel_mult = (1, 2, 4, 8)
         elif image_size == 64:
             channel_mult = (1, 2, 4, 8, 8)
+        elif image_size == 128:
+            channel_mult = (1, 2, 4, 8, 8)
         else:
             raise ValueError(f"unsupported image size: {image_size}")
         attention_ds = []
@@ -60,7 +63,7 @@ class OccupancyDiffusion(nn.Module):
             use_sketch_condition=use_sketch_condition,
             use_text_condition=use_text_condition,
             kernel_size=kernel_size,
-            world_dims=3,
+            world_dims=2,
             num_heads=num_heads, vit_global=vit_global, vit_local=vit_local,
             attention_resolutions=tuple(attention_ds), with_attention=with_attention,
             verbose=verbose)
@@ -78,8 +81,11 @@ class OccupancyDiffusion(nn.Module):
         times = times.unbind(dim=-1)
         return times
 
-    def training_loss(self, img, img_features, text_feature, projection_matrix, kernel_size=None, *args, **kwargs):
+    def training_loss(self, img, img_features, text_feature, projection_matrix, kernel_size=None, cond=None, *args, **kwargs):
         batch = img.shape[0]
+
+        # 
+        cond[-int(batch/8):,:]=-1
 
         times = torch.zeros(
             (batch,), device=self.device).float().uniform_(0, 1)
@@ -93,9 +99,9 @@ class OccupancyDiffusion(nn.Module):
         if random() < 0.5:
             with torch.no_grad():
                 self_cond = self.denoise_fn(
-                    noised_img, noise_level, img_features, text_feature, projection_matrix, kernel_size=kernel_size).detach_()
+                    noised_img, noise_level, img_features, text_feature, projection_matrix, kernel_size=kernel_size, cond=cond).detach_()
         pred = self.denoise_fn(noised_img, noise_level,
-                               img_features, text_feature, projection_matrix, self_cond, kernel_size=kernel_size)
+                               img_features, text_feature, projection_matrix, self_cond, kernel_size=kernel_size, cond=cond)
 
         return F.mse_loss(pred, img)
 
@@ -144,6 +150,266 @@ class OccupancyDiffusion(nn.Module):
             variance = (sigma_next ** 2) * c
             noise = torch.where(
                 rearrange(time_next > truncated_index, 'b -> b 1 1 1 1'),
+                torch.randn_like(img),
+                torch.zeros_like(img)
+            )
+            img = mean + torch.sqrt(variance) * noise
+
+        return img
+    
+
+    @torch.no_grad()
+    def sample_unconditional1(self, batch_size=16,
+                             steps=50, truncated_index: float = 0.0, verbose: bool = True):
+        image_size = self.image_size
+        shape = (batch_size, 1, image_size, image_size)
+        
+        batch, device = shape[0], self.device
+
+        time_pairs = self.get_sampling_timesteps(
+            batch, device=device, steps=steps)
+
+        img = torch.randn(shape, device=device)
+        x_start = None
+
+        # null_conditions
+        null_cond = -torch.ones((batch,4),device=device)
+        t1=tm.time()
+        if verbose:
+            _iter = tqdm(time_pairs, desc='sampling loop time step')
+        else:
+            _iter = time_pairs
+        for time, time_next in _iter:
+
+            log_snr = self.log_snr(time)
+            log_snr_next = self.log_snr(time_next)
+            log_snr, log_snr_next = map(
+                partial(right_pad_dims_to, img), (log_snr, log_snr_next))
+
+            alpha, sigma = log_snr_to_alpha_sigma(log_snr)
+            alpha_next, sigma_next = log_snr_to_alpha_sigma(log_snr_next)
+
+            noise_cond = self.log_snr(time)
+            x_start = self.denoise_fn(
+                img, noise_cond, None, None, None, x_start, kernel_size=None, cond=null_cond)
+
+            if time[0] < TRUNCATED_TIME:
+                x_start.sign_()
+                
+            c = -expm1(log_snr - log_snr_next)
+            mean = alpha_next * (img * (1 - c) / alpha + c * x_start)
+            variance = (sigma_next ** 2) * c
+            noise = torch.where(
+                rearrange(time_next > truncated_index, 'b -> b 1 1 1'),
+                torch.randn_like(img),
+                torch.zeros_like(img)
+            )
+            img = mean + torch.sqrt(variance) * noise
+        t2=tm.time()
+        print("time {}s\n".format(t2-t1))
+        return img
+    
+    
+
+    @torch.no_grad()
+    def sample_conditional1(self, batch_size=16,
+                             steps=50, truncated_index: float = 0.0, verbose: bool = True):
+        image_size = self.image_size
+        shape = (batch_size, 1, image_size, image_size)
+        
+        from utils.condition_data import white_image_feature, an_object_feature
+        batch, device = shape[0], self.device
+
+        time_pairs = self.get_sampling_timesteps(
+            batch, device=device, steps=steps)
+
+        img = torch.randn(shape, device=device)
+        x_start = None
+
+        # elastic_tensor_conditions
+        C=[0.07867282629013062,
+        0.1738007664680481,
+        0.007814331911504269,
+        0.1540214717388153]
+        mycond=torch.tensor(C,device=device).unsqueeze(0).repeat(int(batch),1)
+
+        # null conditions
+        null_cond = -torch.ones((batch,4),device=device)
+
+        # guidance scale
+        guidance_scale=1
+
+        if verbose:
+            _iter = tqdm(time_pairs, desc='sampling loop time step')
+        else:
+            _iter = time_pairs
+        for time, time_next in _iter:
+
+            log_snr = self.log_snr(time)
+            log_snr_next = self.log_snr(time_next)
+            log_snr, log_snr_next = map(
+                partial(right_pad_dims_to, img), (log_snr, log_snr_next))
+
+            alpha, sigma = log_snr_to_alpha_sigma(log_snr)
+            alpha_next, sigma_next = log_snr_to_alpha_sigma(log_snr_next)
+
+            noise_cond = self.log_snr(time)
+
+            x_null = self.denoise_fn(
+                img, noise_cond, None, None, None, x_start, kernel_size=None, cond=null_cond)
+
+            x_start = self.denoise_fn(
+                img, noise_cond, None, None, None, x_start, kernel_size=None, cond=mycond)
+
+            x_start = (1+guidance_scale)*x_start-guidance_scale*x_null
+
+            if time[0] < TRUNCATED_TIME:
+                x_start.sign_()
+                
+            c = -expm1(log_snr - log_snr_next)
+            mean = alpha_next * (img * (1 - c) / alpha + c * x_start)
+            variance = (sigma_next ** 2) * c
+            noise = torch.where(
+                rearrange(time_next > truncated_index, 'b -> b 1 1 1'),
+                torch.randn_like(img),
+                torch.zeros_like(img)
+            )
+            img = mean + torch.sqrt(variance) * noise
+
+        return img
+    
+    @torch.no_grad()
+    def sample_conditional2(self, batch_size=16,
+                             steps=50, truncated_index: float = 0.0, verbose: bool = True):
+        image_size = self.image_size
+        shape = (batch_size, 1, image_size, image_size)
+        
+        from utils.condition_data import white_image_feature, an_object_feature
+        batch, device = shape[0], self.device
+
+        time_pairs = self.get_sampling_timesteps(
+            batch, device=device, steps=steps)
+
+        img = torch.randn(shape, device=device)
+        x_start = None
+
+        # elastic_tensor_conditions
+        C=[0.39799070358276367,
+        0.2523423731327057,
+        0.2508866488933563,
+        0.91848224401474]
+        mycond=torch.tensor(C,device=device).unsqueeze(0).repeat(int(batch),1)
+
+        # null conditions
+        null_cond = -torch.ones((batch,4),device=device)
+
+        cat_cond=torch.cat((mycond,null_cond),dim=0)
+
+        # guidance scale
+        guidance_scale=1
+
+        if verbose:
+            _iter = tqdm(time_pairs, desc='sampling loop time step')
+        else:
+            _iter = time_pairs
+        for time, time_next in _iter:
+
+            log_snr = self.log_snr(time)
+            log_snr_next = self.log_snr(time_next)
+            log_snr, log_snr_next = map(
+                partial(right_pad_dims_to, img), (log_snr, log_snr_next))
+
+            alpha, sigma = log_snr_to_alpha_sigma(log_snr)
+            alpha_next, sigma_next = log_snr_to_alpha_sigma(log_snr_next)
+
+            noise_cond = self.log_snr(time)
+
+            if x_start is None:
+                x_out=self.denoise_fn(
+                torch.cat((img,img)), torch.cat((noise_cond,noise_cond)), None, None, None, x_start, kernel_size=None, cond=cat_cond)
+            else:
+                x_out=self.denoise_fn(
+                    torch.cat((img,img)), torch.cat((noise_cond,noise_cond)), None, None, None, torch.cat((x_start,x_start)), kernel_size=None, cond=cat_cond)
+            
+            x_start,x_null=torch.split(x_out,batch,0)
+
+            x_start = (1+guidance_scale)*x_start-guidance_scale*x_null
+
+            if time[0] < TRUNCATED_TIME:
+                x_start.sign_()
+                
+            c = -expm1(log_snr - log_snr_next)
+            mean = alpha_next * (img * (1 - c) / alpha + c * x_start)
+            variance = (sigma_next ** 2) * c
+            noise = torch.where(
+                rearrange(time_next > truncated_index, 'b -> b 1 1 1'),
+                torch.randn_like(img),
+                torch.zeros_like(img)
+            )
+            img = mean + torch.sqrt(variance) * noise
+
+        return img
+    
+
+    # generate according to json file
+    @torch.no_grad()
+    def sample_conditional3(self, batch_size=16,
+                             steps=50, truncated_index: float = 0.0, verbose: bool = True, mycond=None):
+        image_size = self.image_size
+        shape = (batch_size, 1, image_size, image_size)
+        
+        from utils.condition_data import white_image_feature, an_object_feature
+        batch, device = shape[0], self.device
+
+        time_pairs = self.get_sampling_timesteps(
+            batch, device=device, steps=steps)
+
+        img = torch.randn(shape, device=device)
+        x_start = None
+
+        # elastic_tensor_conditions
+        assert(mycond is not None)
+        assert(mycond.shape==(batch,4))
+        mycond=mycond.to(device)
+
+        # null conditions
+        null_cond = -torch.ones((batch,4),device=device)
+
+        # guidance scale
+        guidance_scale=1
+
+        if verbose:
+            _iter = tqdm(time_pairs, desc='sampling loop time step')
+        else:
+            _iter = time_pairs
+        for time, time_next in _iter:
+
+            log_snr = self.log_snr(time)
+            log_snr_next = self.log_snr(time_next)
+            log_snr, log_snr_next = map(
+                partial(right_pad_dims_to, img), (log_snr, log_snr_next))
+
+            alpha, sigma = log_snr_to_alpha_sigma(log_snr)
+            alpha_next, sigma_next = log_snr_to_alpha_sigma(log_snr_next)
+
+            noise_cond = self.log_snr(time)
+
+            x_null = self.denoise_fn(
+                img, noise_cond, None, None, None, x_start, kernel_size=None, cond=null_cond)
+
+            x_start = self.denoise_fn(
+                img, noise_cond, None, None, None, x_start, kernel_size=None, cond=mycond)
+
+            x_start = (1+guidance_scale)*x_start-guidance_scale*x_null
+
+            if time[0] < TRUNCATED_TIME:
+                x_start.sign_()
+                
+            c = -expm1(log_snr - log_snr_next)
+            mean = alpha_next * (img * (1 - c) / alpha + c * x_start)
+            variance = (sigma_next ** 2) * c
+            noise = torch.where(
+                rearrange(time_next > truncated_index, 'b -> b 1 1 1'),
                 torch.randn_like(img),
                 torch.zeros_like(img)
             )

@@ -2,7 +2,7 @@ import copy
 from utils.utils import set_requires_grad
 from torch.utils.data import DataLoader
 from network.model_utils import EMA
-from network.data_loader import occupancy_field_Dataset
+from network.data_loader import occupancy_field_Dataset,ImageDataset
 from pathlib import Path
 from torch.optim import AdamW,Adam
 from utils.utils import update_moving_average
@@ -115,7 +115,7 @@ class DiffusionModel(LightningModule):
         return [optimizer]
 
     def train_dataloader(self):
-        _dataset = occupancy_field_Dataset(sdf_folder=self.sdf_folder,
+        '''_dataset = occupancy_field_Dataset(sdf_folder=self.sdf_folder,
                                            sketch_folder=self.sketch_folder,
                                            data_class=self.data_class,
                                            size=self.image_size,
@@ -128,7 +128,9 @@ class DiffusionModel(LightningModule):
                                            detail_view=self.detail_view,
                                            use_sketch_condition=self.use_sketch_condition,
                                            use_text_condition=self.use_text_condition
-                                           )
+                                           )'''
+        _dataset = ImageDataset(resolution=self.image_size,
+                                data_folder=self.sdf_folder,)
         dataloader = DataLoader(_dataset,
                                 num_workers=self.num_workers,
                                 batch_size=self.batch_size, shuffle=True, pin_memory=True, drop_last=False)
@@ -136,7 +138,7 @@ class DiffusionModel(LightningModule):
         return dataloader
 
     def training_step(self, batch, batch_idx):
-        occupancy = batch["occupancy"]
+        '''occupancy = batch["occupancy"]
         if self.use_sketch_condition:
             image_features = batch["image_feature"]
             if random.random() < self.view_information_ratio:
@@ -156,7 +158,18 @@ class DiffusionModel(LightningModule):
             text_feature = None
 
         loss = self.model.training_loss(
-            occupancy, image_features, text_feature, projection_matrix, kernel_size=kernel_size).mean()
+            occupancy, image_features, text_feature, projection_matrix, kernel_size=kernel_size).mean()'''
+        
+        image_features = None
+        projection_matrix = None
+        kernel_size = None
+        text_feature = None
+        
+        img=batch["img"]
+        cond=batch["cond"]
+
+        loss = self.model.training_loss(
+            img, image_features, text_feature, projection_matrix, kernel_size=kernel_size, cond=cond).mean()
 
         self.log("loss", loss.clone().detach().item(), prog_bar=True)
 

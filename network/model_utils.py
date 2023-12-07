@@ -74,6 +74,10 @@ def normalization(channels):
     _channels = min(channels, 32)
     return GroupNorm32(_channels, channels)
 
+def normalization1(channels):
+    _channels = min(channels, 32)
+    return GroupNorm32(_channels, channels, affine=False)
+
 
 class AttentionBlock(nn.Module):
 
@@ -313,6 +317,67 @@ class ResnetBlock(nn.Module):
 
         h = self.block2(h)
         return h + self.res_conv(x)
+    
+
+class ResnetBlock1(nn.Module):
+    def __init__(self, world_dims: int, dim_in: int, dim_out: int, emb_dim: int, dropout: float = 0.1,
+                 use_text_condition: bool = True):
+        super().__init__()
+        self.world_dims = world_dims
+        self.time_mlp = nn.Sequential(
+            activation_function(),
+            nn.Linear(emb_dim, 2*dim_out)
+        )
+        self.use_text_condition = use_text_condition
+        if self.use_text_condition:
+            self.text_mlp = nn.Sequential(
+                activation_function(),
+                nn.Linear(emb_dim, dim_out),
+            )
+        self.cond_mlp0 = nn.Sequential(
+                activation_function(),
+                nn.Linear(emb_dim, 2*dim_out),
+            )
+        self.cond_mlp1 = nn.Sequential(
+                activation_function(),
+                nn.Linear(emb_dim, 2*dim_out),
+            )
+        self.cond_mlp2 = nn.Sequential(
+                activation_function(),
+                nn.Linear(emb_dim, 2*dim_out),
+            )
+        self.cond_mlp3 = nn.Sequential(
+                activation_function(),
+                nn.Linear(emb_dim, 2*dim_out),
+            )
+
+
+        self.block1 = nn.Sequential(
+            normalization(dim_in),
+            activation_function(),
+            conv_nd(world_dims, dim_in, dim_out, 3, padding=1),
+        )
+        self.block2 = nn.Sequential(
+            normalization1(dim_out),
+            activation_function(),
+            nn.Dropout(dropout),
+            zero_module(conv_nd(world_dims, dim_out, dim_out, 3, padding=1)),
+        )
+        self.res_conv = conv_nd(
+            world_dims, dim_in, dim_out, 1) if dim_in != dim_out else nn.Identity()
+
+    def forward(self, x, time_emb, text_condition=None, cond_emb=None):
+        h = self.block1(x)
+        emb_out = self.time_mlp(time_emb)[(...,) + (None, )*self.world_dims] + \
+                    self.cond_mlp0(cond_emb[0])[(...,) + (None, )*self.world_dims] + \
+                    self.cond_mlp1(cond_emb[1])[(...,) + (None, )*self.world_dims] + \
+                    self.cond_mlp2(cond_emb[2])[(...,) + (None, )*self.world_dims] + \
+                    self.cond_mlp3(cond_emb[3])[(...,) + (None, )*self.world_dims]
+        out_norm, out_rest = self.block2[0], self.block2[1:]
+        scale, shift = torch.chunk(emb_out, 2, dim=1)
+        h=out_norm(h) * (1 + scale) + shift
+        h = out_rest(h)
+        return h + self.res_conv(x)
 
 
 class LearnedSinusoidalPosEmb(nn.Module):
@@ -322,6 +387,23 @@ class LearnedSinusoidalPosEmb(nn.Module):
         assert (dim % 2) == 0
         half_dim = dim // 2
         self.weights = nn.Parameter(torch.randn(half_dim))
+
+    def forward(self, x):
+        x = rearrange(x, 'b -> b 1')
+        freqs = x * rearrange(self.weights, 'd -> 1 d') * 2 * math.pi
+        fouriered = torch.cat((freqs.sin(), freqs.cos()), dim=-1)
+        fouriered = torch.cat((x, fouriered), dim=-1)
+        return fouriered
+    
+class LearnedSinusoidalPosEmb1(nn.Module):
+
+    def __init__(self, dim):
+        super().__init__()
+        assert (dim % 2) == 0
+        half_dim = dim // 2
+        self.weights = nn.Parameter(torch.exp(
+        -math.log(10000) * torch.arange(start=0, end=half_dim, dtype=torch.float32) / half_dim
+    ))
 
     def forward(self, x):
         x = rearrange(x, 'b -> b 1')
