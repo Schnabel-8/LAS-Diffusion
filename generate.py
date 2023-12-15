@@ -91,7 +91,7 @@ def generate_conditional1(
     root_dir = os.path.join(output_path, postfix)
 
     ensure_directory(root_dir)
-    batches = num_to_groups(num_generate, 1024)
+    batches = num_to_groups(num_generate, 50)
     generator = discrete_diffusion.ema_model if ema else discrete_diffusion.model
     index = start_index
 
@@ -100,6 +100,136 @@ def generate_conditional1(
         res_tensor = generator.sample_conditional1(
             batch_size=batch, steps=steps, truncated_index=truncated_time)
         gathered_samples.extend(post_process(res_tensor).cpu().numpy())
+    save_as_npz(gathered_samples,output_path)
+
+def generate_conditional_bdr(
+    model_path: str,
+    output_path: str = "./outputs",
+    ema: bool = True,
+    num_generate: int = 36,
+    start_index: int = 0,
+    steps: int = 50,
+    truncated_time: float = 0.0,
+):
+    model_name, model_id = model_path.split('/')[-2], model_path.split('/')[-1]
+    discrete_diffusion = DiffusionModel.load_from_checkpoint(model_path).cuda()
+    postfix = f"{model_name}_{model_id}_{ema}_{steps}_{truncated_time}_conditional"
+    root_dir = os.path.join(output_path, postfix)
+
+    ensure_directory(root_dir)
+    batches = num_to_groups(num_generate, 50)
+    generator = discrete_diffusion.ema_model if ema else discrete_diffusion.model
+    index = start_index
+
+    gathered_samples=[]
+    for batch in batches:
+        res_tensor = generator.sample_conditional1(
+            batch_size=batch, steps=steps, truncated_index=truncated_time)
+        gathered_samples.extend(post_process(res_tensor).cpu().numpy())
+    save_as_npz(gathered_samples,output_path)
+
+def generate_conditional_bdr_uncond(
+    model_path: str,
+    output_path: str = "./outputs",
+    ema: bool = True,
+    num_generate: int = 36,
+    start_index: int = 0,
+    steps: int = 50,
+    truncated_time: float = 0.0,
+    bdr_path="",
+):
+    model_name, model_id = model_path.split('/')[-2], model_path.split('/')[-1]
+    discrete_diffusion = DiffusionModel.load_from_checkpoint(model_path).cuda()
+    postfix = f"{model_name}_{model_id}_{ema}_{steps}_{truncated_time}_conditional"
+    root_dir = os.path.join(output_path, postfix)
+
+    # load bdr
+    mybdr=np.zeros((16,1,128,128))
+    for i in range(16):
+        # fixed bdr
+        ei=6
+        path=os.path.join(bdr_path,str(ei)+".png")
+        with open(path, "rb") as f:
+            myimg = Image.open(f)
+            myimg.load()
+        myimg = np.array(myimg.convert("L"))
+        myimg = myimg.astype(np.float32) / 127.5 - 1
+        bdr=np.ones_like(myimg)
+        idx=np.where(myimg[0,:]==-1)[0]
+        bdr[idx,:]=-1
+        bdr[:,idx]=-1
+        mybdr[i]=bdr[np.newaxis,:]
+
+    ensure_directory(root_dir)
+    batches = num_to_groups(num_generate, 16)
+    generator = discrete_diffusion.ema_model if ema else discrete_diffusion.model
+    index = start_index
+
+    gathered_samples=[]
+    j=0
+    for batch in batches:
+        ctensor=-np.ones((batch,3))
+        res_tensor = generator.sample_conditional_bdr_uncond(
+            batch_size=batch, steps=steps, truncated_index=truncated_time,C=ctensor,mybdr=mybdr[:batch])
+        gathered_samples.extend(post_process(res_tensor).cpu().numpy())
+        j+=16
+    save_as_npz(gathered_samples,output_path)
+
+def generate_conditional_bdr_json(
+    model_path: str,
+    output_path: str = "./outputs",
+    ema: bool = True,
+    num_generate: int = 36,
+    start_index: int = 0,
+    steps: int = 50,
+    truncated_time: float = 0.0,
+    json_path="",
+    bdr_path="",
+):
+    model_name, model_id = model_path.split('/')[-2], model_path.split('/')[-1]
+    discrete_diffusion = DiffusionModel.load_from_checkpoint(model_path).cuda()
+    postfix = f"{model_name}_{model_id}_{ema}_{steps}_{truncated_time}_conditional"
+    root_dir = os.path.join(output_path, postfix)
+
+
+    # load json file
+    with open(json_path,"r") as f:
+            data=js.load(f)
+    c1=np.array(data["C1"])
+    ctensor=np.zeros((3,c1.shape[0]))
+    ctensor[0]=c1
+    ctensor[1]=np.array(data["C2"])
+    ctensor[2]=np.array(data["C3"])
+
+    # load bdr
+    mybdr=np.zeros((16,1,128,128))
+    for i in range(16):
+        # fixed bdr
+        ei=6
+        path=os.path.join(bdr_path,str(ei)+".png")
+        with open(path, "rb") as f:
+            myimg = Image.open(f)
+            myimg.load()
+        myimg = np.array(myimg.convert("L"))
+        myimg = myimg.astype(np.float32) / 127.5 - 1
+        bdr=np.ones_like(myimg)
+        idx=np.where(myimg[0,:]==-1)[0]
+        bdr[idx,:]=-1
+        bdr[:,idx]=-1
+        mybdr[i]=bdr[np.newaxis,:]
+
+    ensure_directory(root_dir)
+    batches = num_to_groups(ctensor.shape[1], 16)
+    generator = discrete_diffusion.ema_model if ema else discrete_diffusion.model
+    index = start_index
+
+    gathered_samples=[]
+    j=0
+    for batch in batches:
+        res_tensor = generator.sample_conditional_bdr_json(
+            batch_size=batch, steps=steps, truncated_index=truncated_time,C=ctensor[:,j:j+batch].T,mybdr=mybdr[:batch])
+        gathered_samples.extend(post_process(res_tensor).cpu().numpy())
+        j+=16
     save_as_npz(gathered_samples,output_path)
 
 
@@ -299,6 +429,7 @@ if __name__ == '__main__':
     parser.add_argument("--verbose", type=str2bool, default=False)
     # json file of elastic tensors
     parser.add_argument("--json_path", type=str, default="")
+    parser.add_argument("--bdr_path", type=str, default="")
 
     args = parser.parse_args()
     method = (args.generate_method).lower()
@@ -327,5 +458,17 @@ if __name__ == '__main__':
         generate_conditional2(model_path=args.model_path, num_generate=args.num_generate,
                                output_path=args.output_path, ema=args.ema, start_index=args.start_index, steps=args.steps,
                                truncated_time=args.truncated_time,json_path=args.json_path)
+    elif method == "generate_based_on_bdr":
+        generate_conditional_bdr(model_path=args.model_path, num_generate=args.num_generate,
+                               output_path=args.output_path, ema=args.ema, start_index=args.start_index, steps=args.steps,
+                               truncated_time=args.truncated_time)
+    elif method == "generate_based_on_bdr_uncond":
+        generate_conditional_bdr_uncond(model_path=args.model_path, num_generate=args.num_generate,
+                               output_path=args.output_path, ema=args.ema, start_index=args.start_index, steps=args.steps,
+                               truncated_time=args.truncated_time,bdr_path=args.bdr_path)
+    elif method == "generate_based_on_bdr_json":
+        generate_conditional_bdr_json(model_path=args.model_path, num_generate=args.num_generate,
+                               output_path=args.output_path, ema=args.ema, start_index=args.start_index, steps=args.steps,
+                               truncated_time=args.truncated_time,json_path=args.json_path,bdr_path=args.bdr_path)
     else:
         raise NotImplementedError

@@ -1,0 +1,104 @@
+`bottleneck` is a tool that can be used as an initial step for debugging
+bottlenecks in your program.
+
+It summarizes runs of your script with the Python profiler and PyTorch's
+autograd profiler. Because your script will be profiled, please ensure that it
+exits in a finite amount of time.
+
+For more complicated uses of the profilers, please see
+https://docs.python.org/3/library/profile.html and
+https://pytorch.org/docs/master/autograd.html#profiler for more information.
+Running environment analysis...
+Running your script with cProfile
+Running your script with the autograd profiler...
+--------------------------------------------------------------------------------
+  Environment Summary
+--------------------------------------------------------------------------------
+PyTorch 1.9.0+cu111 DEBUG compiled w/ CUDA 11.1
+Running with Python 3.8 and CUDA 10.1.243
+
+`pip3 list` truncated output:
+numpy==1.26.0
+--------------------------------------------------------------------------------
+  cProfile output
+--------------------------------------------------------------------------------
+         3711915 function calls (3601330 primitive calls) in 66.942 seconds
+
+   Ordered by: internal time
+   List reduced from 9447 to 15 due to restriction <15>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+      150   29.360    0.196   29.360    0.196 {built-in method where}
+        1   28.330   28.330   59.906   59.906 /home/fjx/LAS-Diffusion/./network/model.py:214(sample_conditional1)
+      530    3.667    0.007    3.667    0.007 {method 'cuda' of 'torch._C._TensorBase' objects}
+     3900    1.011    0.000    1.011    0.000 {built-in method conv2d}
+     2208    0.238    0.000    0.238    0.000 {built-in method marshal.loads}
+     6500    0.192    0.000    0.192    0.000 {built-in method torch._C._nn.linear}
+     1100    0.136    0.000    1.559    0.001 /home/fjx/LAS-Diffusion/./network/model_utils.py:369(forward)
+     1070    0.129    0.000    0.133    0.000 /home/fjx/.local/lib/python3.8/site-packages/torch/serialization.py:841(load_tensor)
+     1162    0.118    0.000    0.229    0.000 /home/fjx/.local/lib/python3.8/site-packages/torch/nn/modules/module.py:1276(_load_from_state_dict)
+      220    0.118    0.001    0.118    0.001 {method 'uniform_' of 'torch._C._TensorBase' objects}
+   667771    0.113    0.000    0.113    0.000 {method 'startswith' of 'str' objects}
+ 4803/934    0.106    0.000    0.178    0.000 /usr/lib/python3.8/copy.py:258(_reconstruct)
+      600    0.096    0.000    0.096    0.000 {built-in method conv1d}
+     2900    0.088    0.000    0.088    0.000 {built-in method group_norm}
+   2894/1    0.075    0.000   66.954   66.954 {built-in method builtins.exec}
+
+
+--------------------------------------------------------------------------------
+  autograd profiler output (CPU mode)
+--------------------------------------------------------------------------------
+        top 15 events sorted by cpu_time_total
+
+-----------------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg    # of Calls  
+-----------------------  ------------  ------------  ------------  ------------  ------------  ------------  
+            aten::where         0.00%       2.808us        25.02%     579.224ms     579.224ms             1  
+    aten::nonzero_numpy         0.00%       4.940us        25.02%     579.221ms     579.221ms             1  
+          aten::nonzero        25.02%     579.193ms        25.02%     579.209ms     579.209ms             1  
+            aten::where         0.00%       4.485us        25.00%     578.958ms     578.958ms             1  
+    aten::nonzero_numpy         0.00%       3.798us        25.00%     578.953ms     578.953ms             1  
+          aten::nonzero        25.00%     578.927ms        25.00%     578.938ms     578.938ms             1  
+            aten::where         0.00%       2.937us        24.99%     578.682ms     578.682ms             1  
+    aten::nonzero_numpy         0.00%       4.423us        24.99%     578.679ms     578.679ms             1  
+          aten::nonzero        24.99%     578.651ms        24.99%     578.667ms     578.667ms             1  
+            aten::where         0.00%       2.855us        24.99%     578.602ms     578.602ms             1  
+    aten::nonzero_numpy         0.00%       4.646us        24.99%     578.600ms     578.600ms             1  
+          aten::nonzero        24.99%     578.569ms        24.99%     578.587ms     578.587ms             1  
+            aten::where         0.00%       3.159us        24.98%     578.492ms     578.492ms             1  
+    aten::nonzero_numpy         0.00%       5.440us        24.98%     578.488ms     578.488ms             1  
+            aten::where         0.00%       3.531us        24.98%     578.483ms     578.483ms             1  
+-----------------------  ------------  ------------  ------------  ------------  ------------  ------------  
+Self CPU time total: 2.315s
+
+--------------------------------------------------------------------------------
+  autograd profiler output (CUDA mode)
+--------------------------------------------------------------------------------
+        top 15 events sorted by cpu_time_total
+
+	Because the autograd profiler uses the CUDA event API,
+	the CUDA time column reports approximately max(cuda_time, cpu_time).
+	Please ignore this output if your code does not use CUDA.
+
+-----------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg    # of Calls  
+-----------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+            aten::where         0.00%       8.440us        25.03%     259.055ms     259.055ms       6.144us         1.36%     132.096us     132.096us             1  
+    aten::nonzero_numpy         0.00%      17.574us        25.03%     259.047ms     259.047ms      12.288us         2.71%     125.952us     125.952us             1  
+          aten::nonzero        25.02%     258.985ms        25.02%     259.013ms     259.013ms      81.920us        18.10%      97.280us      97.280us             1  
+            aten::where         0.00%      10.018us        25.01%     258.829ms     258.829ms       7.168us         1.58%     155.648us     155.648us             1  
+    aten::nonzero_numpy         0.00%      16.133us        25.01%     258.819ms     258.819ms      10.240us         2.26%     148.480us     148.480us             1  
+          aten::nonzero        25.00%     258.756ms        25.00%     258.785ms     258.785ms     109.568us        24.21%     121.856us     121.856us             1  
+            aten::where         0.00%       7.525us        25.00%     258.710ms     258.710ms       4.096us         0.90%     138.240us     138.240us             1  
+    aten::nonzero_numpy         0.00%      15.326us        24.99%     258.702ms     258.702ms       9.216us         2.04%     134.144us     134.144us             1  
+          aten::nonzero        24.99%     258.642ms        24.99%     258.670ms     258.670ms      94.208us        20.81%     107.520us     107.520us             1  
+            aten::where         0.00%       7.904us        24.98%     258.583ms     258.583ms       5.120us         1.13%     128.000us     128.000us             1  
+    aten::nonzero_numpy         0.00%      16.311us        24.98%     258.575ms     258.575ms      10.240us         2.26%     122.880us     122.880us             1  
+          aten::nonzero        24.98%     258.517ms        24.98%     258.543ms     258.543ms      83.968us        18.55%      97.280us      97.280us             1  
+            aten::where         0.00%       7.211us        24.98%     258.541ms     258.541ms       6.144us         1.36%     151.552us     151.552us             1  
+    aten::nonzero_numpy         0.00%      15.976us        24.98%     258.533ms     258.533ms       8.192us         1.81%     145.408us     145.408us             1  
+            aten::where         0.00%       8.764us        24.98%     258.526ms     258.526ms       4.096us         0.90%     111.616us     111.616us             1  
+-----------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+Self CPU time total: 1.035s
+Self CUDA time total: 452.608us
+

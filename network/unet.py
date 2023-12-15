@@ -57,16 +57,9 @@ class UNetModel(nn.Module):
             activation_function(),
             nn.Linear(emb_dim, emb_dim)
         )
-        self.cond_pos_emb3 = LearnedSinusoidalPosEmb1(base_channels)
-        self.cond_emb3 = nn.Sequential(
-            nn.Linear(base_channels + 1, emb_dim),
-            activation_function(),
-            nn.Linear(emb_dim, emb_dim)
-        )
         self.null_emb0=nn.Parameter(torch.zeros(emb_dim))
         self.null_emb1=nn.Parameter(torch.zeros(emb_dim))
         self.null_emb2=nn.Parameter(torch.zeros(emb_dim))
-        self.null_emb3=nn.Parameter(torch.zeros(emb_dim))
         if self.use_text_condition:
             self.text_emb = nn.Sequential(
                 nn.Linear(text_condition_dim, emb_dim),
@@ -74,7 +67,7 @@ class UNetModel(nn.Module):
                 nn.Linear(emb_dim, emb_dim)
             )
 
-        self.input_emb = conv_nd(world_dims, 2, base_channels, 3, padding=1)
+        self.input_emb = conv_nd(world_dims, 3, base_channels, 3, padding=1)
         self.downs = nn.ModuleList([])
         self.ups = nn.ModuleList([])
         num_resolutions = len(in_out)
@@ -148,10 +141,10 @@ class UNetModel(nn.Module):
 
         self.out = conv_nd(world_dims, base_channels, 1, 3, padding=1)
 
-    def forward(self, x, t, img_condition, text_condition, projection_matrix, x_self_cond=None, kernel_size=None, cond=None):
+    def forward(self, x, t, img_condition, text_condition, projection_matrix, x_self_cond=None, kernel_size=None, cond=None, bdr=None):
 
         x_self_cond = default(x_self_cond, lambda: torch.zeros_like(x))
-        x = torch.cat((x, x_self_cond), dim=1)
+        x = torch.cat((x, x_self_cond, bdr), dim=1)
 
         if self.verbose:
             print("input size:")
@@ -165,12 +158,10 @@ class UNetModel(nn.Module):
         cond_emb0=self.cond_emb0(self.cond_pos_emb0(cond[:,0]))
         cond_emb1=self.cond_emb1(self.cond_pos_emb1(cond[:,1]))
         cond_emb2=self.cond_emb2(self.cond_pos_emb2(cond[:,2]))
-        cond_emb3=self.cond_emb3(self.cond_pos_emb3(cond[:,3]))
         cond_emb0[null_index]=self.null_emb0
         cond_emb1[null_index]=self.null_emb1
         cond_emb2[null_index]=self.null_emb2
-        cond_emb3[null_index]=self.null_emb3
-        cond_emb=[cond_emb0,cond_emb1,cond_emb2,cond_emb3]
+        cond_emb=[cond_emb0,cond_emb1,cond_emb2]
 
         if self.use_text_condition:
             text_condition = self.text_emb(text_condition)

@@ -1,7 +1,7 @@
 import copy
 from utils.utils import set_requires_grad
 from torch.utils.data import DataLoader
-from network.model_utils import EMA
+from network.model_utils import EMA,make_sym,noise_sym,noise_sym_like
 from network.data_loader import occupancy_field_Dataset,ImageDataset
 from pathlib import Path
 from torch.optim import AdamW,Adam
@@ -167,9 +167,10 @@ class DiffusionModel(LightningModule):
         
         img=batch["img"]
         cond=batch["cond"]
+        bdr=batch["bdr"]
 
         loss = self.model.training_loss(
-            img, image_features, text_feature, projection_matrix, kernel_size=kernel_size, cond=cond).mean()
+            img, image_features, text_feature, projection_matrix, kernel_size=kernel_size, cond=cond,bdr=bdr).mean()
 
         self.log("loss", loss.clone().detach().item(), prog_bar=True)
 

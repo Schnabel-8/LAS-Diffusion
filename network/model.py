@@ -10,6 +10,10 @@ from torch import nn
 from torch.special import expm1
 import time as tm
 
+from PIL import Image
+import json as js
+import os
+
 TRUNCATED_TIME = 0.7
 
 
@@ -81,7 +85,7 @@ class OccupancyDiffusion(nn.Module):
         times = times.unbind(dim=-1)
         return times
 
-    def training_loss(self, img, img_features, text_feature, projection_matrix, kernel_size=None, cond=None, *args, **kwargs):
+    def training_loss(self, img, img_features, text_feature, projection_matrix, kernel_size=None, cond=None,bdr=None, *args, **kwargs):
         batch = img.shape[0]
 
         # 
@@ -89,7 +93,8 @@ class OccupancyDiffusion(nn.Module):
 
         times = torch.zeros(
             (batch,), device=self.device).float().uniform_(0, 1)
-        noise = torch.randn_like(img)
+        #noise = torch.randn_like(img)
+        noise = noise_sym_like(img)
 
         noise_level = self.log_snr(times)
         padded_noise_level = right_pad_dims_to(img, noise_level)
@@ -99,9 +104,10 @@ class OccupancyDiffusion(nn.Module):
         if random() < 0.5:
             with torch.no_grad():
                 self_cond = self.denoise_fn(
-                    noised_img, noise_level, img_features, text_feature, projection_matrix, kernel_size=kernel_size, cond=cond).detach_()
+                    noised_img, noise_level, img_features, text_feature, projection_matrix, kernel_size=kernel_size, cond=cond,bdr=bdr).detach_()
+                self_cond=make_sym(self_cond,device=self.device)
         pred = self.denoise_fn(noised_img, noise_level,
-                               img_features, text_feature, projection_matrix, self_cond, kernel_size=kernel_size, cond=cond)
+                               img_features, text_feature, projection_matrix, self_cond, kernel_size=kernel_size, cond=cond,bdr=bdr)
 
         return F.mse_loss(pred, img)
 
@@ -209,7 +215,79 @@ class OccupancyDiffusion(nn.Module):
         print("time {}s\n".format(t2-t1))
         return img
     
-    
+    @torch.no_grad()
+    def sample_conditional_bdr(self, batch_size=16,
+                             steps=50, truncated_index: float = 0.0, verbose: bool = True):
+        image_size = self.image_size
+        shape = (batch_size, 1, image_size, image_size)
+        
+        from utils.condition_data import white_image_feature, an_object_feature
+        batch, device = shape[0], self.device
+
+        time_pairs = self.get_sampling_timesteps(
+            batch, device=device, steps=steps)
+
+        img = torch.randn(shape, device=device)
+        x_start = None
+
+        root="/home/fjx/bulk_rand"
+        with open(os.path.join(root,"ncount.json"),"r") as f:
+            elatsic_tensor=js.load(f)
+
+        myidx1=6185
+
+        path=os.path.join(root,"img",str(myidx1)+".png")
+        with open(path, "rb") as f:
+            myimg = Image.open(f)
+            myimg.load()
+        myimg = np.array(myimg.convert("L"))
+        myimg = myimg.astype(np.float32) / 127.5 - 1
+        bdr=np.ones_like(myimg)
+        idx=np.where(myimg[0,:]==-1)[0]
+        bdr[idx,:]=-1
+        bdr[:,idx]=-1
+        mybdr=torch.tensor(bdr[np.newaxis,:],device=device).unsqueeze(0).repeat(int(batch),1,1,1)
+
+        # elastic_tensor_conditions
+
+        # null conditions
+        null_cond = -torch.ones((batch,4),device=device)
+
+        # guidance scale
+
+        if verbose:
+            _iter = tqdm(time_pairs, desc='sampling loop time step')
+        else:
+            _iter = time_pairs
+        for time, time_next in _iter:
+
+            log_snr = self.log_snr(time)
+            log_snr_next = self.log_snr(time_next)
+            log_snr, log_snr_next = map(
+                partial(right_pad_dims_to, img), (log_snr, log_snr_next))
+
+            alpha, sigma = log_snr_to_alpha_sigma(log_snr)
+            alpha_next, sigma_next = log_snr_to_alpha_sigma(log_snr_next)
+
+            noise_cond = self.log_snr(time)
+
+            x_start = self.denoise_fn(
+                img, noise_cond, None, None, None, x_start, kernel_size=None, cond=null_cond,bdr=mybdr)
+
+            if time[0] < TRUNCATED_TIME:
+                x_start.sign_()
+                
+            c = -expm1(log_snr - log_snr_next)
+            mean = alpha_next * (img * (1 - c) / alpha + c * x_start)
+            variance = (sigma_next ** 2) * c
+            noise = torch.where(
+                rearrange(time_next > truncated_index, 'b -> b 1 1 1'),
+                torch.randn_like(img),
+                torch.zeros_like(img)
+            )
+            img = mean + torch.sqrt(variance) * noise
+
+        return img
 
     @torch.no_grad()
     def sample_conditional1(self, batch_size=16,
@@ -226,11 +304,28 @@ class OccupancyDiffusion(nn.Module):
         img = torch.randn(shape, device=device)
         x_start = None
 
+        root="/home/fjx/bulk_rand"
+        with open(os.path.join(root,"ncount.json"),"r") as f:
+            elatsic_tensor=js.load(f)
+
+        myidx1=0
+
+        path=os.path.join(root,"img",str(myidx1)+".png")
+        with open(path, "rb") as f:
+            myimg = Image.open(f)
+            myimg.load()
+        myimg = np.array(myimg.convert("L"))
+        myimg = myimg.astype(np.float32) / 127.5 - 1
+        bdr=np.ones_like(myimg)
+        idx=np.where(myimg[0,:]==-1)[0]
+        bdr[idx,:]=-1
+        bdr[:,idx]=-1
+        mybdr=torch.tensor(bdr[np.newaxis,:],device=device).unsqueeze(0).repeat(int(batch),1,1,1)
+
+        myidx2=8807
         # elastic_tensor_conditions
-        C=[0.07867282629013062,
-        0.1738007664680481,
-        0.007814331911504269,
-        0.1540214717388153]
+        C=[v for v in elatsic_tensor[str(myidx2)]][:-1]
+
         mycond=torch.tensor(C,device=device).unsqueeze(0).repeat(int(batch),1)
 
         # null conditions
@@ -256,10 +351,10 @@ class OccupancyDiffusion(nn.Module):
             noise_cond = self.log_snr(time)
 
             x_null = self.denoise_fn(
-                img, noise_cond, None, None, None, x_start, kernel_size=None, cond=null_cond)
+                img, noise_cond, None, None, None, x_start, kernel_size=None, cond=null_cond,bdr=mybdr)
 
             x_start = self.denoise_fn(
-                img, noise_cond, None, None, None, x_start, kernel_size=None, cond=mycond)
+                img, noise_cond, None, None, None, x_start, kernel_size=None, cond=mycond,bdr=mybdr)
 
             x_start = (1+guidance_scale)*x_start-guidance_scale*x_null
 
@@ -272,6 +367,140 @@ class OccupancyDiffusion(nn.Module):
             noise = torch.where(
                 rearrange(time_next > truncated_index, 'b -> b 1 1 1'),
                 torch.randn_like(img),
+                torch.zeros_like(img)
+            )
+            img = mean + torch.sqrt(variance) * noise
+
+        return img
+    
+
+   
+    @torch.no_grad()
+    def sample_conditional_bdr_uncond(self, batch_size=16,
+                             steps=50, truncated_index: float = 0.0, verbose: bool = True, C=None, mybdr=None):
+        image_size = self.image_size
+        shape = (batch_size, 1, image_size, image_size)
+        
+        from utils.condition_data import white_image_feature, an_object_feature
+        batch, device = shape[0], self.device
+
+        time_pairs = self.get_sampling_timesteps(
+            batch, device=device, steps=steps)
+
+        #img = torch.randn(shape, device=device)
+        img=noise_sym(shape,device=device)
+        x_start = None
+
+        mybdr=torch.tensor(mybdr,device=device,dtype=torch.float32)
+
+        # null conditions
+        null_cond = -torch.ones((batch,4),device=device)
+
+        # guidance scale
+        guidance_scale=1
+
+        if verbose:
+            _iter = tqdm(time_pairs, desc='sampling loop time step')
+        else:
+            _iter = time_pairs
+        for time, time_next in _iter:
+
+            log_snr = self.log_snr(time)
+            log_snr_next = self.log_snr(time_next)
+            log_snr, log_snr_next = map(
+                partial(right_pad_dims_to, img), (log_snr, log_snr_next))
+
+            alpha, sigma = log_snr_to_alpha_sigma(log_snr)
+            alpha_next, sigma_next = log_snr_to_alpha_sigma(log_snr_next)
+
+            noise_cond = self.log_snr(time)
+
+            x_start = self.denoise_fn(
+                img, noise_cond, None, None, None, x_start, kernel_size=None, cond=null_cond,bdr=mybdr)
+            #
+            x_start=make_sym(x_start,device)
+
+            if time[0] < TRUNCATED_TIME:
+                x_start.sign_()
+                
+            c = -expm1(log_snr - log_snr_next)
+            mean = alpha_next * (img * (1 - c) / alpha + c * x_start)
+            variance = (sigma_next ** 2) * c
+            noise = torch.where(
+                rearrange(time_next > truncated_index, 'b -> b 1 1 1'),
+                #torch.randn_like(img),
+                noise_sym_like(img),
+                torch.zeros_like(img)
+            )
+            img = mean + torch.sqrt(variance) * noise
+
+        return img
+    
+
+    @torch.no_grad()
+    def sample_conditional_bdr_json(self, batch_size=16,
+                             steps=50, truncated_index: float = 0.0, verbose: bool = True, C=None, mybdr=None):
+        image_size = self.image_size
+        shape = (batch_size, 1, image_size, image_size)
+        
+        from utils.condition_data import white_image_feature, an_object_feature
+        batch, device = shape[0], self.device
+
+        time_pairs = self.get_sampling_timesteps(
+            batch, device=device, steps=steps)
+
+        #img = torch.randn(shape, device=device)
+        img=noise_sym(shape,device=device)
+        x_start = None
+
+        mybdr=torch.tensor(mybdr,device=device,dtype=torch.float32)
+
+
+        mycond=torch.tensor(C,device=device,dtype=torch.float32)
+        #mycond=torch.tensor(C,device=device,dtype=torch.float32).unsqueeze(0).repeat(int(batch),1)
+
+        # null conditions
+        null_cond = -torch.ones((batch,4),device=device)
+
+        # guidance scale
+        guidance_scale=1
+
+        if verbose:
+            _iter = tqdm(time_pairs, desc='sampling loop time step')
+        else:
+            _iter = time_pairs
+        for time, time_next in _iter:
+
+            log_snr = self.log_snr(time)
+            log_snr_next = self.log_snr(time_next)
+            log_snr, log_snr_next = map(
+                partial(right_pad_dims_to, img), (log_snr, log_snr_next))
+
+            alpha, sigma = log_snr_to_alpha_sigma(log_snr)
+            alpha_next, sigma_next = log_snr_to_alpha_sigma(log_snr_next)
+
+            noise_cond = self.log_snr(time)
+
+            x_null = self.denoise_fn(
+                img, noise_cond, None, None, None, x_start, kernel_size=None, cond=null_cond,bdr=mybdr)
+            #
+            x_null=make_sym(x_null,device)
+            x_start = self.denoise_fn(
+                img, noise_cond, None, None, None, x_start, kernel_size=None, cond=mycond,bdr=mybdr)
+            #
+            x_start=make_sym(x_start,device)
+            x_start = (1+guidance_scale)*x_start-guidance_scale*x_null
+
+            if time[0] < TRUNCATED_TIME:
+                x_start.sign_()
+                
+            c = -expm1(log_snr - log_snr_next)
+            mean = alpha_next * (img * (1 - c) / alpha + c * x_start)
+            variance = (sigma_next ** 2) * c
+            noise = torch.where(
+                rearrange(time_next > truncated_index, 'b -> b 1 1 1'),
+                #torch.randn_like(img),
+                noise_sym_like(img),
                 torch.zeros_like(img)
             )
             img = mean + torch.sqrt(variance) * noise

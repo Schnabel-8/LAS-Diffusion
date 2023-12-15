@@ -219,8 +219,11 @@ class ImageDataset(torch.utils.data.Dataset):
             img.load()
         img = np.array(img.convert("L"))
         img = img.astype(np.float32) / 127.5 - 1
-        
-
+        bdr=np.ones_like(img)
+        idx=np.where(img[0,:]==-1)[0]
+        bdr[idx,:]=-1
+        bdr[:,idx]=-1
         return {"img":img[np.newaxis,:],
-                "cond":np.array([v for v in self.elatsic_tensor[front]],dtype=np.float32)
+                "cond":np.array([v for v in self.elatsic_tensor[front]][:-1],dtype=np.float32),
+                "bdr":bdr[np.newaxis,:],
         } 

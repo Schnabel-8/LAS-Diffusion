@@ -346,10 +346,6 @@ class ResnetBlock1(nn.Module):
                 activation_function(),
                 nn.Linear(emb_dim, 2*dim_out),
             )
-        self.cond_mlp3 = nn.Sequential(
-                activation_function(),
-                nn.Linear(emb_dim, 2*dim_out),
-            )
 
 
         self.block1 = nn.Sequential(
@@ -371,8 +367,7 @@ class ResnetBlock1(nn.Module):
         emb_out = self.time_mlp(time_emb)[(...,) + (None, )*self.world_dims] + \
                     self.cond_mlp0(cond_emb[0])[(...,) + (None, )*self.world_dims] + \
                     self.cond_mlp1(cond_emb[1])[(...,) + (None, )*self.world_dims] + \
-                    self.cond_mlp2(cond_emb[2])[(...,) + (None, )*self.world_dims] + \
-                    self.cond_mlp3(cond_emb[3])[(...,) + (None, )*self.world_dims]
+                    self.cond_mlp2(cond_emb[2])[(...,) + (None, )*self.world_dims]
         out_norm, out_rest = self.block2[0], self.block2[1:]
         scale, shift = torch.chunk(emb_out, 2, dim=1)
         h=out_norm(h) * (1 + scale) + shift
@@ -434,3 +429,20 @@ def alpha_cosine_log_snr(t, s: float = 0.008):
 
 def log_snr_to_alpha_sigma(log_snr):
     return torch.sqrt(torch.sigmoid(log_snr)), torch.sqrt(torch.sigmoid(-log_snr))
+
+# return an symmetric matrix which has the same upper traingle as x
+def make_sym(x,device=None):
+    assert (device is not None) 
+    dim=len(x.shape)
+    assert dim>=2
+    return (torch.transpose(torch.triu(x,diagonal=1),dim-2,dim-1)+torch.triu(x,diagonal=0)).to(device)
+
+# return an symmetric gaussian noise
+def noise_sym(shape,device=None):
+    dim=len(shape)
+    assert dim==4
+    noise=torch.randn(shape)
+    return make_sym(noise,device)
+
+def noise_sym_like(x):
+    return noise_sym(x.shape,device=x.device)

@@ -1,0 +1,17 @@
+1.加载数据
+图片归一化到-1，1
+属性归一化到0，1
+
+2.classifier free
+添加embedding
+设置百分之10为空条件-1
+learnable embedding初始化
+空条件embedding
+normalization的affine设置为false
+
+
+12/8
+两个json文件：
+* 从数据集分布范围内采样一些点（属性）
+* 随机指定一些边界进行生成（边界）
+生成并计算模量
